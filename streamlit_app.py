@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 # Sayfa ayarları
 st.set_page_config(page_title="CC Agent Telephony Performance Analysis", layout="wide")
-st.title("📊 Agent Telephony Performance Analysis")
+st.title("📊 CC Agent Telephony Performance Analysis")
 
 
 # Excel dosyası yükleyici
