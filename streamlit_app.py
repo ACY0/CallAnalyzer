@@ -24,7 +24,8 @@ if uploaded_file is not None:
 
         results = []
         for date, group in df_sorted.groupby(df_sorted["date"].dt.date):
-            available_rows = group[group["state"] == "available"]
+            # ✅ Lowercase compare for safety
+            available_rows = group[group["state"].str.lower() == "available"]
             if not available_rows.empty:
                 first_avail_time = pd.to_datetime(available_rows.iloc[0]["start time"]).time()
                 results.append({"Date": date, "First Available": first_avail_time})
