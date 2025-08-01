@@ -38,19 +38,19 @@ if uploaded_file:
         logout_rows = day_data[day_data["State"] == "Logged Out"]
 
         if not available_rows.empty:
-            first_avail_time = pd.to_datetime(available_rows.iloc[0]["Start tme"]).time()
+            first_avail_time = pd.to_datetime(available_rows.iloc[0]["Start time"]).time()
             if first_avail_time > pd.to_datetime("07:45:00").time():
                 result["Geç Giriş"] += 1
 
             for i, row in break_rows.iterrows():
-                break_time = pd.to_datetime(row["Start tme"]).time()
+                break_time = pd.to_datetime(row["Start time"]).time()
                 if break_time <= (pd.to_datetime(first_avail_time.strftime("%H:%M:%S")) + pd.Timedelta(hours=1)).time():
                     result["Erken Mola (1 saat içinde Break)"] += 1
                     break
 
         if not logout_rows.empty:
-            last_logout_time = pd.to_datetime(logout_rows.iloc[0]["Start tme"]).time()
-            after_logout = available_rows[available_rows["Start tme"] > logout_rows.iloc[0]["Start tme"]]
+            last_logout_time = pd.to_datetime(logout_rows.iloc[0]["Start time"]).time()
+            after_logout = available_rows[available_rows["Start time"] > logout_rows.iloc[0]["Start time"]]
             if last_logout_time < pd.to_datetime("16:25:00").time() and after_logout.empty:
                 result["Erken Çıkış (<16:25)"] += 1
 
