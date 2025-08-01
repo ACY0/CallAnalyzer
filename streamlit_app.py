@@ -1,166 +1,149 @@
-'===============================
-' CALL CENTER ANALYSIS MAKROSU - GÜNCELLENMİŞ
-'===============================
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
 
-Sub RunCallCenterAnalysis()
+# Sayfa ayarları
+st.set_page_config(page_title="Call Center Analyzer", layout="wide")
+st.title("📊 Call Center Log Analyzer")
 
-    Dim ws As Worksheet: Set ws = ThisWorkbook.Sheets("Data")
-    Dim wb As Workbook: Set wb = ThisWorkbook
+# Excel dosyası yükleyici
+uploaded_file = st.file_uploader("📂 Upload your Excel file (.xlsx)", type=["xlsx"])
 
-    Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+if uploaded_file is not None:
+    try:
+        df = pd.read_excel(uploaded_file, sheet_name=0)
+        df.columns = df.columns.str.strip().str.lower()  # Sütun adlarını temizle
 
-    ' Sayfaları silip yeniden oluştur
-    Dim sheetNames As Variant
-    sheetNames = Array("Analysis", "Late Entry", "Early Break", "Early Logout", "Meeting Fail")
-    
-    Dim s As Variant
-    For Each s In sheetNames
-        On Error Resume Next
-        Application.DisplayAlerts = False
-        wb.Sheets(s).Delete
-        Application.DisplayAlerts = True
-        On Error GoTo 0
-        wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count)).Name = s
-    Next s
+        st.write("✅ Columns detected:", df.columns.tolist())
 
-    Dim shAN As Worksheet: Set shAN = wb.Sheets("Analysis")
-    Dim shLE As Worksheet: Set shLE = wb.Sheets("Late Entry")
-    Dim shEB As Worksheet: Set shEB = wb.Sheets("Early Break")
-    Dim shEL As Worksheet: Set shEL = wb.Sheets("Early Logout")
-    Dim shMF As Worksheet: Set shMF = wb.Sheets("Meeting Fail")
+        required_cols = ["state", "date", "start time", "duration"]
+        for col in required_cols:
+            if col not in df.columns:
+                st.error(f"❌ Required column missing: '{col}'")
+                st.stop()
 
-    ' Başlıklar
-    shLE.Range("A1:B1") = Array("Date", "First Available")
-    shEB.Range("A1:C1") = Array("Date", "Break Time", "Duration (s)")
-    shEL.Range("A1:B1") = Array("Date", "Logout Time")
-    shMF.Range("A1:C1") = Array("Date", "Time", "Duration (s)")
+        # Tarih ve saatleri düzenle
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+        df["start time"] = pd.to_datetime(df["start time"].astype(str), errors='coerce').dt.time
 
-    ' Sayaçlar
-    Dim countLE As Long, countEB As Long, countEL As Long, countMF As Long
-    countLE = 0: countEB = 0: countEL = 0: countMF = 0
+        # Duration'ı saniyeye çevir
+        def duration_to_seconds(d):
+            try:
+                t = str(d).strip()
+                if pd.isna(t) or t == "":
+                    return 0
+                parts = list(map(int, t.split(":")))
+                if len(parts) == 3:
+                    return parts[0]*3600 + parts[1]*60 + parts[2]
+                elif len(parts) == 2:
+                    return parts[0]*60 + parts[1]
+                else:
+                    return 0
+            except:
+                return 0
 
-    Dim i As Long, rowStart As Long, rowEnd As Long
-    rowStart = 2
+        df["duration_sec"] = df["duration"].apply(duration_to_seconds)
 
-    Do While rowStart <= lastRow
+        # Tarihe göre sırala
+        df_sorted = df.sort_values(by=["date", "start time"], ascending=[True, True])
 
-        Dim currentDate As String
-        currentDate = ws.Cells(rowStart, "D").Text
+        # Fail listeleri
+        late_entry = []
+        early_break = []
+        early_logout = []
+        break_fail = []
+        break_over_1h = []
+        short_meeting = []
 
-        rowEnd = rowStart
-        Do While rowEnd <= lastRow And ws.Cells(rowEnd, "D").Text = currentDate
-            rowEnd = rowEnd + 1
-        Loop
+        # Gün gün analiz et
+        for date, group in df_sorted.groupby("date"):
+            group = group.reset_index(drop=True)
 
-        Dim firstAvailableTime As Variant: firstAvailableTime = ""
-        Dim earlyBreakLogged As Boolean: earlyBreakLogged = False
-        Dim logoutTime As Variant: logoutTime = ""
-        Dim hasLaterAvailable As Boolean: hasLaterAvailable = False
+            # Geç Giriş
+            availables = group[group["state"].str.lower() == "available"]
+            if not availables.empty:
+                first_avail_time = availables.iloc[0]["start time"]
+                if first_avail_time > datetime.strptime("07:45:00", "%H:%M:%S").time():
+                    late_entry.append((date, first_avail_time))
 
-        ' Geç Giriş (ilk Available satırı aşağıdan yukarıya)
-        For i = rowEnd - 1 To rowStart Step -1
-            If ws.Cells(i, "A").Value = "Available" Then
-                firstAvailableTime = ws.Cells(i, "E").Value
-                If TimeValue(firstAvailableTime) > TimeValue("07:45:00") Then
-                    countLE = countLE + 1
-                    shLE.Cells(countLE + 1, 1).Value = currentDate
-                    shLE.Cells(countLE + 1, 2).Value = firstAvailableTime
-                End If
-                Exit For
-            End If
-        Next i
+            # Erken Mola (login'den sonraki ilk 1 saat içinde break)
+            if not availables.empty:
+                first_time = datetime.combine(datetime.today(), availables.iloc[0]["start time"])
+                break_found = group[group["state"].str.lower() == "break"]
+                for _, row in break_found.iterrows():
+                    current_time = datetime.combine(datetime.today(), row["start time"])
+                    if timedelta(0) <= current_time - first_time <= timedelta(hours=1):
+                        early_break.append((date, row["start time"], row["duration_sec"]))
+                        break
 
-        ' Erken Mola: Available sonrası 1 saat içinde Break
-        If firstAvailableTime <> "" Then
-            For i = rowEnd - 1 To rowStart Step -1
-                If ws.Cells(i, "A").Value = "Break" Then
-                    Dim breakTime As Variant: breakTime = ws.Cells(i, "E").Value
-                    Dim durationText As String: durationText = Trim(ws.Cells(i, "F").Text)
-                    Dim durSec As Long: durSec = DurationToSeconds(durationText)
+            # Erken Çıkış
+            logouts = group[group["state"].str.lower() == "logged out"]
+            if not logouts.empty:
+                last_logout = logouts.iloc[-1]
+                last_time = last_logout["start time"]
+                after_logout = group[group["start time"] > last_time]
+                if not any(after_logout["state"].str.lower().str.contains("available")):
+                    if last_time < datetime.strptime("16:25:00", "%H:%M:%S").time():
+                        early_logout.append((date, last_time))
 
-                    If TimeValue(breakTime) <= TimeValue(firstAvailableTime) + TimeSerial(1, 0, 0) Then
-                        countEB = countEB + 1
-                        shEB.Cells(countEB + 1, 1).Value = currentDate
-                        shEB.Cells(countEB + 1, 2).Value = breakTime
-                        shEB.Cells(countEB + 1, 3).Value = durSec
-                        Exit For
-                    End If
-                End If
-            Next i
-        End If
+            # Uzun Break (satır bazlı > 15dk)
+            for _, row in group.iterrows():
+                if row["state"].lower() == "break" and row["duration_sec"] > 900:
+                    break_fail.append((date, row["start time"], row["duration_sec"]))
 
-        ' Erken Çıkış (üstten aşağı): Eğer 16:25'ten önce logout varsa ve sonra tekrar login yoksa
-        Dim lastLogoutRow As Long: lastLogoutRow = -1
-        Dim hasAvailableAfterLogout As Boolean: hasAvailableAfterLogout = False
+            # Günlük toplam break > 1 saat
+            total_break = group[group["state"].str.lower() == "break"]["duration_sec"].sum()
+            if total_break > 3600:
+                break_over_1h.append((date, total_break))
 
-        For i = rowStart To rowEnd - 1
-            If ws.Cells(i, "A").Value = "Logged Out" Then
-                logoutTime = ws.Cells(i, "E").Value
-                If TimeValue(logoutTime) < TimeValue("16:25:00") Then
-                    lastLogoutRow = i
-                End If
-            End If
-        Next i
+            # Kısa Meeting / Training (<15dk)
+            for _, row in group.iterrows():
+                if row["state"].lower() in ["meeting", "training"] and 0 < row["duration_sec"] < 900:
+                    short_meeting.append((date, row["start time"], row["duration_sec"]))
 
-        If lastLogoutRow <> -1 Then
-            For i = lastLogoutRow + 1 To rowEnd - 1
-                If ws.Cells(i, "A").Value = "Available" Then
-                    hasAvailableAfterLogout = True
-                    Exit For
-                End If
-            Next i
-            If Not hasAvailableAfterLogout Then
-                countEL = countEL + 1
-                shEL.Cells(countEL + 1, 1).Value = currentDate
-                shEL.Cells(countEL + 1, 2).Value = logoutTime
-            End If
-        End If
+        # Özet tablo
+        st.subheader("📊 Failure Analysis Summary")
+        st.dataframe(pd.DataFrame({
+            "Kategori": [
+                "Geç Giriş",
+                "Erken Mola (İlk 1 saat içinde Break)",
+                "Erken Çıkış (16:25’ten önce)",
+                "Break Süresi > 15 dk (satır bazlı)",
+                "Günlük Break Süresi > 1 saat",
+                "Kısa Meeting/Training (<15dk)"
+            ],
+            "Sayı": [
+                len(late_entry),
+                len(early_break),
+                len(early_logout),
+                len(break_fail),
+                len(break_over_1h),
+                len(short_meeting)
+            ]
+        }))
 
-        ' Kısa Meeting/Training
-        For i = rowStart To rowEnd - 1
-            Dim st As String: st = ws.Cells(i, "A").Value
-            If st = "Meeting" Or st = "Training" Then
-                Dim dtext As String: dtext = Trim(ws.Cells(i, "F").Text)
-                Dim s As Long: s = DurationToSeconds(dtext)
-                If s > 0 And s < 900 Then
-                    countMF = countMF + 1
-                    shMF.Cells(countMF + 1, 1).Value = currentDate
-                    shMF.Cells(countMF + 1, 2).Value = ws.Cells(i, "E").Value
-                    shMF.Cells(countMF + 1, 3).Value = s
-                End If
-            End If
-        Next i
+        # Detaylı tablolar
+        with st.expander("🔍 Fail detay tabloları"):
+            st.markdown("#### Geç Giriş")
+            st.dataframe(pd.DataFrame(late_entry, columns=["Date", "First Available"]))
 
-        rowStart = rowEnd
-    Loop
+            st.markdown("#### Erken Mola")
+            st.dataframe(pd.DataFrame(early_break, columns=["Date", "Break Time", "Duration (s)"]))
 
-    ' ANALYSIS SHEET
-    With shAN
-        .Range("A1:B1").Value = Array("Kategori", "Sayi")
-        .Cells(2, 1).Value = "Geç Giris": .Cells(2, 2).Value = countLE
-        .Cells(3, 1).Value = "Erken Mola (Ilk 1 saat içinde Break)": .Cells(3, 2).Value = countEB
-        .Cells(4, 1).Value = "Erken Çikis (16:25'ten önce)": .Cells(4, 2).Value = countEL
-        .Cells(5, 1).Value = "Kısa Meeting/Training (<15dk)": .Cells(5, 2).Value = countMF
-    End With
+            st.markdown("#### Erken Çıkış")
+            st.dataframe(pd.DataFrame(early_logout, columns=["Date", "Logout Time"]))
 
-    MsgBox "✅ Günlük bazlı analiz tamamlandi!", vbInformation
+            st.markdown("#### Break > 15 dk")
+            st.dataframe(pd.DataFrame(break_fail, columns=["Date", "Break Time", "Duration (s)"]))
 
-End Sub
+            st.markdown("#### Günlük Break > 1 saat")
+            st.dataframe(pd.DataFrame(break_over_1h, columns=["Date", "Total Break Duration (s)"]))
 
-Function DurationToSeconds(ByVal t As String) As Long
-    On Error GoTo errhandler
-    Dim parts() As String
-    t = Trim(t)
-    If InStr(1, t, ":") = 0 Then DurationToSeconds = 0: Exit Function
-    parts = Split(t, ":")
-    If UBound(parts) = 2 Then
-        DurationToSeconds = CLng(parts(0)) * 3600 + CLng(parts(1)) * 60 + CLng(parts(2))
-    ElseIf UBound(parts) = 1 Then
-        DurationToSeconds = CLng(parts(0)) * 60 + CLng(parts(1))
-    Else
-        DurationToSeconds = 0
-    End If
-    Exit Function
-errhandler:
-    DurationToSeconds = 0
-End Function
+            st.markdown("#### Kısa Meeting/Training")
+            st.dataframe(pd.DataFrame(short_meeting, columns=["Date", "Time", "Duration (s)"]))
+
+    except Exception as e:
+        st.error("🚨 An error occurred while processing the file:")
+        st.exception(e)
+else:
+    st.info("⬆️ Please upload an Excel file to begin.")
